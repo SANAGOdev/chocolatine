@@ -1,0 +1,103 @@
+name: Chocolatine Workflow
+on:
+  push:
+    branches-ignore:
+      - 'ga-ignore-*'
+  pull_request:
+    branches-ignore:
+      - 'ga-ignore-*'
+env:
+  MIRROR_URL: "git@github.com:SANAGOdev/chocolatine.git"
+  EXECUTABLES: "binary"
+
+jobs:
+  check_coding_style:
+    outputs:
+      style_header: ${{steps.hr.outputs.style_header}}
+      style_context: ${{steps.ctx.outputs.style_context}}
+
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/epitech/coding-style-checker:latest
+
+    steps:
+      - name: Run checkout
+        uses: actions/checkout@v3.4.0
+        with:
+          fetch-depth: 0
+          
+      - name: Run coding style checker
+        run: "check.sh $(pwd) $(pwd)"
+
+      - name: Print Coding Style Report
+        id: "hr"
+        run: |
+          if [ $(stat --printf="%s" coding-style-reports.log) -ne 0 ]; then
+            echo "::error title=Coding Style Report::$(wc -l < coding-style-reports.log) style error(s), $(grep -c ": MAJOR:" coding-style-reports.log) major, $(grep -c ": MINOR:" coding-style-reports.log) minor, $(grep -c ": INFO:" coding-style-reports.log) info";
+            echo style_header=$(echo "Coding Style Report: $(wc -l < coding-style-reports.log) style error(s), $(grep -c ": MAJOR:" coding-style-reports.log) major, $(grep -c ": MINOR:" coding-style-reports.log) minor, $(grep -c ": INFO:" coding-style-reports.log) info") >> $GITHUB_OUTPUT
+          else
+            echo "::notice title=Coding Style Report::No Coding Style Error"
+          fi
+
+      - name: Parse coding style errors
+        id: "ctx"
+        run: 'while read -r line; do echo "::error title=$(echo $line | awk -F":" ''{print $3}'') coding style error,file=$(echo $line | awk -F":" ''{print $1}''),line=$(echo $line | awk -F":" ''{print $2}'')::$(echo $line | awk -F":" ''{print $4}'')"; done < coding-style-reports.log;
+          while read -r line; do echo $(echo "$(echo $line | awk -F":" ''{print $3}'') $(echo $line | awk -F":" ''{print $4}'')") in $(echo $line | awk -F":" ''{print $1}''):$(echo $line | awk -F":" ''{print $2}'') $(echo "<br />") >> temp; echo style_context=$(cat temp) >> $GITHUB_OUTPUT; done < coding-style-reports.log'
+
+      - name: Check coding style report stats
+        run: |
+          if [ $(stat --printf="%s" coding-style-reports.log) -ne 0 ]; then
+            exit 1
+          fi
+
+  check_program_compilation:
+    needs: check_coding_style
+    runs-on: ubuntu-latest
+    container: 
+      image: epitechcontent/epitest-docker
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Compile program
+        run: make
+        timeout-minutes: 2
+      - name: Clean
+        run: make clean
+      - name: Check executables
+        run: |
+          for executable in $(echo $EXECUTABLES | tr "," "\n")
+          do
+            if [ ! -f $executable ] || [ ! -x $executable ]; then
+              echo "Executable $executable not found or not executable"
+              exit 1
+            fi
+          done
+
+  run_tests:
+    needs: check_program_compilation
+    runs-on: ubuntu-latest
+    container: 
+      image: epitechcontent/epitest-docker
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Run tests
+        run: make tests_run
+        timeout-minutes: 2
+
+  push_to_mirror:
+    needs: run_tests
+    if: ${{ github.event_name == 'push' }}
+    name: "Push all files to mirror specified"
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3.4.0
+        with:
+          fetch-depth: 0
+      - uses: pixta-dev/repository-mirroring-action@v1
+        with:
+          target_repo_url:
+            ${{ env.MIRROR_URL }}
+          ssh_private_key:
+            ${{ secrets.GIT_SSH_PRIVATE_KEY }}
